@@ -6,6 +6,9 @@
 
 #include <iostream>
 
+#include "texture_bridge_fallback.h"
+#include "texture_bridge_gpu.h"
+
 namespace {
 constexpr auto kErrorInvalidArgs = "invalidArguments";
 
@@ -100,17 +103,35 @@ static const std::string& GetCursorName(const HCURSOR cursor) {
 WebviewBridge::WebviewBridge(flutter::BinaryMessenger* messenger,
                              flutter::TextureRegistrar* texture_registrar,
                              GraphicsContext* graphics_context,
-                             std::unique_ptr<Webview> webview)
+                             std::unique_ptr<Webview> webview,
+                             bool use_gpu_surface)
     : webview_(std::move(webview)), texture_registrar_(texture_registrar) {
-  texture_bridge_ = std::make_unique<TextureBridge>(graphics_context,
-                                                    webview_->surface().get());
+  if (use_gpu_surface) {
+    texture_bridge_ = std::make_unique<TextureBridgeGpu>(
+        graphics_context, webview_->surface().get());
 
-  flutter_texture_ =
-      std::make_unique<flutter::TextureVariant>(flutter::PixelBufferTexture(
-          [this](size_t width,
-                 size_t height) -> const FlutterDesktopPixelBuffer* {
-            return texture_bridge_->CopyPixelBuffer(width, height);
-          }));
+    flutter_texture_ =
+        std::make_unique<flutter::TextureVariant>(flutter::GpuSurfaceTexture(
+            kFlutterDesktopGpuSurfaceTypeDxgi,
+            [bridge = static_cast<TextureBridgeGpu*>(texture_bridge_.get())](
+                size_t width,
+                size_t height) -> const FlutterDesktopGpuSurfaceDescriptor* {
+              return bridge->GetSurfaceDescriptor(width, height);
+            }));
+
+  } else {
+    texture_bridge_ = std::make_unique<TextureBridgeFallback>(
+        graphics_context, webview_->surface().get());
+
+    flutter_texture_ =
+        std::make_unique<flutter::TextureVariant>(flutter::PixelBufferTexture(
+            [bridge =
+                 static_cast<TextureBridgeFallback*>(texture_bridge_.get())](
+                size_t width,
+                size_t height) -> const FlutterDesktopPixelBuffer* {
+              return bridge->CopyPixelBuffer(width, height);
+            }));
+  }
 
   texture_id_ = texture_registrar->RegisterTexture(flutter_texture_.get());
   texture_bridge_->SetOnFrameAvailable(
